@@ -1,25 +1,18 @@
 
 
+import subprocess
 import socket
 import sys
 from datetime import datetime
 
 
 
-PORT_START = 20
-PORT_END = 1024
-TIMEOUT = 1
-
-COMMON_SERVICES = {
-    21: "FTP",
-    22: "SSH",
-    23: "Telnet",
-    25: "SMTP",
-    53: "DNS",
-    80: "HTTP",
-    110: "POP3",
-    443: "HTTPS"
-}
+NMAP_ARGS = [
+    "-sS",      
+    "-sV",      
+    "-O",       
+    "-T4"       
+]
 
 
 
@@ -31,116 +24,95 @@ def validate_ip(ip: str) -> bool:
         return False
 
 
+def run_nmap_scan(target_ip: str) -> str:
+ 
+    command = ["nmap"] + NMAP_ARGS + [target_ip]
 
-def detect_os(target_ip: str) -> str:
-  
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(TIMEOUT)
-        sock.connect((target_ip, 80))
-        ttl = sock.getsockopt(socket.IPPROTO_IP, socket.IP_TTL)
-        sock.close()
+    print(f"\n[+] Target      : {target_ip}")
+    print(f"[+] Scan started: {datetime.now()}")
+    print(f"[+] Command     : {' '.join(command)}\n")
 
-        if ttl <= 64:
-            return "Linux / Unix (Likely)"
-        elif ttl <= 128:
-            return "Windows (Likely)"
-        else:
-            return "Network Device / Unknown"
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
 
-    except:
-        return "OS Detection Failed"
+    if result.stderr:
+        print("[!] Nmap Errors:")
+        print(result.stderr)
+
+    return result.stdout
 
 
-
-def scan_ports(target_ip: str) -> list:
+def parse_nmap_output(output: str):
+    
     open_ports = []
+    os_guesses = []
 
-    print(f"\n[+] Target: {target_ip}")
-    print(f"[+] Scan started: {datetime.now()}\n")
+    for line in output.splitlines():
+        
+        if "/tcp" in line and "open" in line:
+            open_ports.append(line.strip())
 
-    for port in range(PORT_START, PORT_END + 1):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(TIMEOUT)
-                result = sock.connect_ex((target_ip, port))
+        
+        if line.startswith("OS details") or line.startswith("Running:"):
+            os_guesses.append(line.strip())
 
-                if result == 0:
-                    open_ports.append(port)
-
-        except:
-            continue
-
-    return open_ports
+    return open_ports, os_guesses
 
 
+def generate_report(target_ip: str, raw_output: str):
+    open_ports, os_guesses = parse_nmap_output(raw_output)
 
-def grab_banner(target_ip: str, port: int) -> str:
-    try:
-        with socket.socket() as sock:
-            sock.settimeout(TIMEOUT)
-            sock.connect((target_ip, port))
-            banner = sock.recv(1024).decode(errors="ignore").strip()
-            return banner if banner else "No banner"
-    except:
-        return "Banner not available"
+    print("\n" + "=" * 65)
+    print("            LEGIT NMAP SECURITY SCAN REPORT")
+    print("=" * 65)
 
+    print(f"Target IP : {target_ip}")
+    print(f"Scan Time : {datetime.now()}")
+    print("-" * 65)
 
-
-def identify_service(port: int) -> str:
-    return COMMON_SERVICES.get(port, "Unknown")
-
-def assess_risk(port: int) -> str:
-    if port in (21, 23):
-        return "High Risk"
-    elif port in (22, 80):
-        return "Medium Risk"
+    if os_guesses:
+        print("OS Detection:")
+        for os in os_guesses:
+            print(f"  {os}")
     else:
-        return "Low Risk"
+        print("OS Detection: Not available")
 
-
-
-def generate_report(target_ip: str, open_ports: list):
-    print("\n" + "=" * 55)
-    print("        DEEP SECURITY SCAN REPORT")
-    print("=" * 55)
-
-    os_guess = detect_os(target_ip)
-    print(f"Target OS Guess : {os_guess}")
-    print("-" * 55)
+    print("-" * 65)
 
     if not open_ports:
-        print("No open ports detected.")
-        return
+        print("No open TCP ports detected.")
+    else:
+        print("Open Ports & Services:")
+        for port in open_ports:
+            print(f"  {port}")
 
-    for port in open_ports:
-        service = identify_service(port)
-        risk = assess_risk(port)
-        banner = grab_banner(target_ip, port)
-
-        print(f"Port: {port}")
-        print(f"  Service : {service}")
-        print(f"  Risk    : {risk}")
-        print(f"  Banner  : {banner}")
-        print("-" * 55)
-
-    print("\nSecurity Recommendations:")
+    print("-" * 65)
+    print("Security Recommendations:")
     print("- Close unused ports")
-    print("- Disable FTP/Telnet")
-    print("- Patch outdated services")
-    print("- Use firewall & IDS")
+    print("- Remove legacy services (FTP/Telnet)")
+    print("- Patch exposed services")
+    print("- Restrict access via firewall")
+    print("- Monitor with IDS/IPS")
 
+    print("=" * 65)
 
 
 def main():
+    print("  Authorized use only. Scanning without permission is illegal.\n")
+
     target_ip = input("Enter target IP : ").strip()
 
     if not validate_ip(target_ip):
         print("[!] Invalid IP address.")
         sys.exit(1)
 
-    open_ports = scan_ports(target_ip)
-    generate_report(target_ip, open_ports)
+    raw_output = run_nmap_scan(target_ip)
+    generate_report(target_ip, raw_output)
+
 
 if __name__ == "__main__":
     main()
