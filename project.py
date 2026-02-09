@@ -3,20 +3,36 @@
 import subprocess
 import socket
 import sys
+import os
+import json
+import logging
 from datetime import datetime
 
+SCAN_PROFILES = {
+    "basic": ["-sS", "-T4"],
+    "service": ["-sS", "-sV", "-T4"],
+    "full": ["-sS", "-sV", "-O", "-A", "-T4"],
+    "vuln": ["-sS", "-sV", "--script=vuln", "-T4"]
+}
+
+REPORT_DIR = "reports"
+LOG_FILE = "pentest.log"
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
-NMAP_ARGS = [
-    "-sS",      
-    "-sV",      
-    "-O",       
-    "-T4"       
-]
+
+def check_privileges():
+    if os.name != "nt" and os.geteuid() != 0:
+        print("[!] Run as root for SYN/OS scans.")
+        sys.exit(1)
 
 
-
-def validate_ip(ip: str) -> bool:
+def validate_ip(ip):
     try:
         socket.inet_aton(ip)
         return True
@@ -24,13 +40,15 @@ def validate_ip(ip: str) -> bool:
         return False
 
 
-def run_nmap_scan(target_ip: str) -> str:
- 
-    command = ["nmap"] + NMAP_ARGS + [target_ip]
+def run_nmap(target, profile):
+    args = SCAN_PROFILES[profile]
+    command = ["nmap"] + args + [target]
 
-    print(f"\n[+] Target      : {target_ip}")
-    print(f"[+] Scan started: {datetime.now()}")
-    print(f"[+] Command     : {' '.join(command)}\n")
+    logging.info(f"Running scan: {' '.join(command)}")
+
+    print(f"\n[+] Target : {target}")
+    print(f"[+] Profile: {profile}")
+    print(f"[+] Started: {datetime.now()}\n")
 
     result = subprocess.run(
         command,
@@ -40,78 +58,85 @@ def run_nmap_scan(target_ip: str) -> str:
     )
 
     if result.stderr:
-        print("[!] Nmap Errors:")
-        print(result.stderr)
+        logging.error(result.stderr)
 
     return result.stdout
 
 
-def parse_nmap_output(output: str):
-    
-    open_ports = []
-    os_guesses = []
+def parse_output(output):
+    ports = []
+    os_info = []
+    vulns = []
 
     for line in output.splitlines():
-        
         if "/tcp" in line and "open" in line:
-            open_ports.append(line.strip())
+            ports.append(line.strip())
 
-        
-        if line.startswith("OS details") or line.startswith("Running:"):
-            os_guesses.append(line.strip())
+        if line.startswith("Running:") or line.startswith("OS details"):
+            os_info.append(line.strip())
 
-    return open_ports, os_guesses
+        if "VULNERABLE" in line or "CVE-" in line:
+            vulns.append(line.strip())
+
+    return {
+        "ports": ports,
+        "os": os_info,
+        "vulnerabilities": vulns
+    }
 
 
-def generate_report(target_ip: str, raw_output: str):
-    open_ports, os_guesses = parse_nmap_output(raw_output)
+def save_report(target, profile, parsed, raw):
+    os.makedirs(REPORT_DIR, exist_ok=True)
 
-    print("\n" + "=" * 65)
-    print("            LEGIT NMAP SECURITY SCAN REPORT")
-    print("=" * 65)
+    report = {
+        "target": target,
+        "profile": profile,
+        "scan_time": str(datetime.now()),
+        "results": parsed
+    }
 
-    print(f"Target IP : {target_ip}")
-    print(f"Scan Time : {datetime.now()}")
-    print("-" * 65)
+    json_path = f"{REPORT_DIR}/{target}_{profile}.json"
+    txt_path = f"{REPORT_DIR}/{target}_{profile}.txt"
 
-    if os_guesses:
-        print("OS Detection:")
-        for os in os_guesses:
-            print(f"  {os}")
-    else:
-        print("OS Detection: Not available")
+    with open(json_path, "w") as f:
+        json.dump(report, f, indent=4)
 
-    print("-" * 65)
+    with open(txt_path, "w") as f:
+        f.write(raw)
 
-    if not open_ports:
-        print("No open TCP ports detected.")
-    else:
-        print("Open Ports & Services:")
-        for port in open_ports:
-            print(f"  {port}")
-
-    print("-" * 65)
-    print("Security Recommendations:")
-    print("- Close unused ports")
-    print("- Remove legacy services (FTP/Telnet)")
-    print("- Patch exposed services")
-    print("- Restrict access via firewall")
-    print("- Monitor with IDS/IPS")
-
-    print("=" * 65)
+    print(f"[+] Reports saved:")
+    print(f"    {json_path}")
+    print(f"    {txt_path}")
 
 
 def main():
-    print("  Authorized use only. Scanning without permission is illegal.\n")
+ 
 
-    target_ip = input("Enter target IP : ").strip()
+    check_privileges()
 
-    if not validate_ip(target_ip):
-        print("[!] Invalid IP address.")
+    target = input("Target IP: ").strip()
+    if not validate_ip(target):
+        print("[!] Invalid IP")
         sys.exit(1)
 
-    raw_output = run_nmap_scan(target_ip)
-    generate_report(target_ip, raw_output)
+    print("\nScan Profiles:")
+    for p in SCAN_PROFILES:
+        print(f" - {p}")
+
+    profile = input("\nChoose profile: ").strip().lower()
+    if profile not in SCAN_PROFILES:
+        print("[!] Invalid profile")
+        sys.exit(1)
+
+    raw = run_nmap(target, profile)
+    parsed = parse_output(raw)
+
+    print("\n===== SCAN SUMMARY =====")
+    print(f"Open Ports: {len(parsed['ports'])}")
+    print(f"OS Info   : {'Yes' if parsed['os'] else 'No'}")
+    print(f"Vulns     : {len(parsed['vulnerabilities'])}")
+
+    save_report(target, profile, parsed, raw)
 
 
 if __name__ == "__main__":
